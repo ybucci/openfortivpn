@@ -24,10 +24,64 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef __APPLE__
+/*
+ * Open the SAML login URL in the default browser of the invoking user.
+ * No shell is involved, the URL is passed as a single argument.
+ * Set OPENFORTIVPN_NO_BROWSER to disable.
+ */
+static void open_browser(const char *url)
+{
+	const char *sudo_uid = getenv("SUDO_UID");
+	pid_t pid;
+	int status;
+
+	if (getenv("OPENFORTIVPN_NO_BROWSER") != NULL)
+		return;
+
+	pid = fork();
+	if (pid < 0) {
+		log_warn("Could not open browser: %s\n", strerror(errno));
+		return;
+	}
+	if (pid == 0) {
+		if (geteuid() == 0 && sudo_uid != NULL && sudo_uid[0] != '\0') {
+			char user_arg[32];
+			int numeric = 1;
+
+			for (const char *p = sudo_uid; *p != '\0'; p++)
+				if (*p < '0' || *p > '9')
+					numeric = 0;
+			if (!numeric || strlen(sudo_uid) > 10)
+				_exit(127);
+			snprintf(user_arg, sizeof(user_arg), "#%s", sudo_uid);
+			/*
+			 * Run inside the GUI session of the user who called sudo,
+			 * and as that user: Launch Services reads the default
+			 * browser from the calling user's preferences, and root
+			 * would fall back to Safari.
+			 */
+			execl("/bin/launchctl", "launchctl", "asuser", sudo_uid,
+			      "/usr/bin/sudo", "-u", user_arg,
+			      "/usr/bin/open", url, (char *)NULL);
+		} else {
+			execl("/usr/bin/open", "open", url, (char *)NULL);
+		}
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status)
+	    || WEXITSTATUS(status) != 0)
+		log_warn("Could not open the browser, open the URL manually.\n");
+}
+#endif
 
 static void print_url(const struct vpn_config *cfg)
 {
@@ -79,6 +133,9 @@ static void print_url(const struct vpn_config *cfg)
 	         encoded_realm);
 
 	log_info("Authenticate at '%s'\n", url);
+#ifdef __APPLE__
+	open_browser(url);
+#endif
 
 end:
 	free(url);

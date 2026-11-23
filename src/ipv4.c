@@ -1096,8 +1096,168 @@ static inline char *replace_char(char *str, char find, char replace)
 	return str;
 }
 
+#ifdef __APPLE__
+/*
+ * macOS split DNS: macOS ignores /etc/resolv.conf for most lookups and
+ * resolves per-domain through /etc/resolver/<domain> files instead.
+ * Files created here start with a marker line, and only files carrying
+ * that marker are ever overwritten or removed.
+ */
+#define MACOS_RESOLVER_DIR "/etc/resolver"
+#define MACOS_RESOLVER_MARKER "# managed by openfortivpn\n"
+
+static int macos_domain_is_valid(const char *d)
+{
+	size_t len = strlen(d);
+
+	if (len == 0 || len > 253 || d[0] == '.' || strstr(d, ".."))
+		return 0;
+	for (size_t i = 0; i < len; i++) {
+		char c = d[i];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		      || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'))
+			return 0;
+	}
+	return 1;
+}
+
+static int macos_resolver_is_ours(const char *path)
+{
+	char buf[sizeof(MACOS_RESOLVER_MARKER)] = {0};
+	FILE *f = fopen(path, "r");
+	int ours = 0;
+
+	if (f == NULL)
+		return 0;
+	if (fgets(buf, sizeof(buf), f) != NULL)
+		ours = (strcmp(buf, MACOS_RESOLVER_MARKER) == 0);
+	fclose(f);
+	return ours;
+}
+
+/* Write /etc/resolver/<domain> for each domain of the comma separated list. */
+static int macos_write_resolvers(const char *domains, struct in_addr ns1,
+                                 struct in_addr ns2)
+{
+	char *list = strdup(domains);
+	char *saveptr = NULL;
+	int written = 0;
+
+	if (list == NULL)
+		return 0;
+	for (char *d = strtok_r(list, ", \t", &saveptr); d != NULL;
+	     d = strtok_r(NULL, ", \t", &saveptr)) {
+		char path[sizeof(MACOS_RESOLVER_DIR) + 256];
+		FILE *f;
+
+		if (!macos_domain_is_valid(d)) {
+			log_warn("Ignoring invalid DNS domain \"%s\".\n", d);
+			continue;
+		}
+		snprintf(path, sizeof(path), "%s/%s", MACOS_RESOLVER_DIR, d);
+		if (access(path, F_OK) == 0 && !macos_resolver_is_ours(path)) {
+			log_warn("%s exists and is not managed by openfortivpn, skipping.\n",
+			         path);
+			continue;
+		}
+		f = fopen(path, "w");
+		if (f == NULL) {
+			log_warn("Could not write %s (%s).\n", path, strerror(errno));
+			continue;
+		}
+		fputs(MACOS_RESOLVER_MARKER, f);
+		if (ns1.s_addr != 0)
+			fprintf(f, "nameserver %s\n", inet_ntoa(ns1));
+		if (ns2.s_addr != 0)
+			fprintf(f, "nameserver %s\n", inet_ntoa(ns2));
+		if (fclose(f) != 0) {
+			log_warn("Could not close %s (%s).\n", path, strerror(errno));
+			continue;
+		}
+		log_debug("Wrote %s\n", path);
+		written++;
+	}
+	free(list);
+	return written;
+}
+
+static int macos_remove_resolvers(const char *domains)
+{
+	char *list = strdup(domains);
+	char *saveptr = NULL;
+	int removed = 0;
+
+	if (list == NULL)
+		return 0;
+	for (char *d = strtok_r(list, ", \t", &saveptr); d != NULL;
+	     d = strtok_r(NULL, ", \t", &saveptr)) {
+		char path[sizeof(MACOS_RESOLVER_DIR) + 256];
+
+		if (!macos_domain_is_valid(d))
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", MACOS_RESOLVER_DIR, d);
+		if (macos_resolver_is_ours(path) && unlink(path) == 0) {
+			log_debug("Removed %s\n", path);
+			removed++;
+		}
+	}
+	free(list);
+	return removed;
+}
+
+/*
+ * Returns 0 if handled, -1 if there is nothing to do (the caller then falls
+ * back to /etc/resolv.conf). Uses the <split-dns> entries of the gateway
+ * configuration, or the plain dns suffix with the VPN name servers.
+ */
+static int macos_set_split_dns(struct tunnel *tunnel)
+{
+	struct ipv4_config *c = &tunnel->ipv4;
+	int written = 0;
+
+	if (c->split_dns_count == 0 && c->dns_suffix == NULL)
+		return -1;
+	if (mkdir(MACOS_RESOLVER_DIR, 0755) != 0 && errno != EEXIST) {
+		log_warn("Could not create %s (%s).\n", MACOS_RESOLVER_DIR,
+		         strerror(errno));
+		return -1;
+	}
+	for (int i = 0; i < c->split_dns_count; i++) {
+		struct split_dns *sd = &c->split_dns[i];
+
+		written += macos_write_resolvers(sd->domains,
+		                                 sd->ns1_addr.s_addr ? sd->ns1_addr : c->ns1_addr,
+		                                 sd->ns1_addr.s_addr ? sd->ns2_addr : c->ns2_addr);
+	}
+	if (c->split_dns_count == 0 && c->dns_suffix[0] != '\0'
+	    && (c->ns1_addr.s_addr != 0 || c->ns2_addr.s_addr != 0))
+		written += macos_write_resolvers(c->dns_suffix, c->ns1_addr, c->ns2_addr);
+	if (written > 0)
+		log_info("Configured split DNS for %d domain(s) in %s.\n", written,
+		         MACOS_RESOLVER_DIR);
+	return written > 0 ? 0 : -1;
+}
+
+static int macos_unset_split_dns(struct tunnel *tunnel)
+{
+	struct ipv4_config *c = &tunnel->ipv4;
+	int removed = 0;
+
+	for (int i = 0; i < c->split_dns_count; i++)
+		removed += macos_remove_resolvers(c->split_dns[i].domains);
+	if (c->split_dns_count == 0 && c->dns_suffix != NULL)
+		removed += macos_remove_resolvers(c->dns_suffix);
+	return removed > 0 ? 0 : -1;
+}
+#endif /* __APPLE__ */
+
 int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 {
+#ifdef __APPLE__
+	if (macos_set_split_dns(tunnel) == 0)
+		return 0;
+#endif
 	int ret = -1;
 	FILE *file;
 	struct stat stat;
@@ -1314,6 +1474,10 @@ err_close:
 
 int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 {
+#ifdef __APPLE__
+	if (macos_unset_split_dns(tunnel) == 0)
+		return 0;
+#endif
 	int ret = -1;
 	FILE *file;
 	struct stat stat;

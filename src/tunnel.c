@@ -1391,10 +1391,24 @@ int run_tunnel(struct vpn_config *config)
 	log_info("Authenticated.\n");
 	log_debug("Cookie: %s\n", tunnel.cookie);
 
+	/*
+	 * SAML: keep the session cookie in memory so that a reconnection after
+	 * a dropped tunnel can reuse it instead of requiring a new SAML login.
+	 */
+	if (config->saml_port != 0 && tunnel.cookie[0] != '\0') {
+		free(config->cookie);
+		config->cookie = strdup(tunnel.cookie);
+	}
+
 	ret = auth_request_vpn_allocation(&tunnel);
 	if (ret != 1) {
 		log_error("VPN allocation request failed (%s).\n",
 		          err_http_str(ret));
+		if (config->saml_port != 0) {
+			// cookie not accepted anymore, next attempt needs a new login
+			free(config->cookie);
+			config->cookie = NULL;
+		}
 		ret = 1;
 		goto err_tunnel;
 	}
@@ -1410,6 +1424,10 @@ int run_tunnel(struct vpn_config *config)
 	if (ret != 1) {
 		log_error("Could not get VPN configuration (%s).\n",
 		          err_http_str(ret));
+		if (config->saml_port != 0) {
+			free(config->cookie);
+			config->cookie = NULL;
+		}
 		ret = 1;
 		goto err_tunnel;
 	}
@@ -1452,7 +1470,15 @@ err_tunnel:
 	log_info("Closed connection to gateway.\n");
 	tunnel.state = STATE_DOWN;
 
-	if (ssl_connect(&tunnel)) {
+	if (config->saml_port != 0 && config->persistent > 0
+	    && config->cookie != NULL && get_sig_received() == 0) {
+		/*
+		 * Persistent SAML: logging out would invalidate the session
+		 * cookie on the gateway, so keep it to reconnect without a
+		 * new SAML login. A signal (Ctrl+C) still logs out below.
+		 */
+		log_info("Keeping the SAML session for reconnection.\n");
+	} else if (ssl_connect(&tunnel)) {
 		log_info("Could not log out.\n");
 	} else {
 		auth_log_out(&tunnel);

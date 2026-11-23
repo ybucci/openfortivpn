@@ -55,6 +55,15 @@ struct rtentry {
 #define MAX_SPLIT_ROUTES 65535
 #define STEP_SPLIT_ROUTES 32
 
+#define MAX_SPLIT_DNS 16
+
+/* One <split-dns> entry from the gateway XML configuration */
+struct split_dns {
+	char		*domains; // comma separated list of domains
+	struct in_addr	ns1_addr;
+	struct in_addr	ns2_addr;
+};
+
 struct ipv4_config {
 	struct in_addr	ip_addr;
 
@@ -64,6 +73,8 @@ struct ipv4_config {
 	int		ns1_was_there;  // were ns1 already in /etc/resolv.conf?
 	int		ns2_was_there;  // were ns2 already in /etc/resolv.conf?
 	int		dns_suffix_was_there; // was the dns suffix already there?
+	struct split_dns split_dns[MAX_SPLIT_DNS];
+	int		split_dns_count;
 	int		split_routes;
 	int		route_to_vpn_is_added;
 
