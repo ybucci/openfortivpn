@@ -924,6 +924,33 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 	}
 
 	// Routes the tunnel wants to push
+	// Split DNS entries: <split-dns domains='a,b' dnsserver1='x' dnsserver2='y'/>
+	for (int i = 0; i < tunnel->ipv4.split_dns_count; i++)
+		free(tunnel->ipv4.split_dns[i].domains);
+	tunnel->ipv4.split_dns_count = 0;
+	val = buffer;
+	while ((val = xml_find('<', "split-dns", val, 2))) {
+		struct split_dns *sd;
+		char *domains = xml_get(xml_find(' ', "domains=", val, 1));
+		char *ns1 = xml_get(xml_find(' ', "dnsserver1=", val, 1));
+		char *ns2 = xml_get(xml_find(' ', "dnsserver2=", val, 1));
+
+		if (domains == NULL || tunnel->ipv4.split_dns_count >= MAX_SPLIT_DNS) {
+			free(domains);
+			free(ns1);
+			free(ns2);
+			continue;
+		}
+		sd = &tunnel->ipv4.split_dns[tunnel->ipv4.split_dns_count++];
+		sd->domains = domains;
+		sd->ns1_addr.s_addr = ns1 ? inet_addr(ns1) : 0;
+		sd->ns2_addr.s_addr = ns2 ? inet_addr(ns2) : 0;
+		log_debug("Found split dns domains %s (servers %s, %s) in xml config\n",
+		          domains, ns1 ? ns1 : "-", ns2 ? ns2 : "-");
+		free(ns1);
+		free(ns2);
+	}
+
 	val = xml_find('<', "split-tunnel-info", buffer, 1);
 	while ((val = xml_find('<', "addr", val, 2))) {
 		char *dest, *mask;
