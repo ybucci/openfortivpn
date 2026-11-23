@@ -764,10 +764,30 @@ int main(int argc, char *argv[])
 	}
 
 	do {
-		if (run_tunnel(&cfg) != 0)
+		int saml_ok = 1;
+
+		// SAML: no reusable cookie left, a new SAML login is required
+		if (cfg.saml_port != 0 && cfg.cookie == NULL
+		    && cfg.saml_session_id[0] == '\0') {
+			log_info("SAML session expired, starting a new SAML login...\n");
+			if (wait_for_http_request(&cfg) != 0
+			    || cfg.saml_session_id[0] == '\0') {
+				log_error("Failed to retrieve SAML session id\n");
+				saml_ok = 0;
+			}
+		}
+
+		if (!saml_ok) {
 			ret = EXIT_FAILURE;
-		else
-			ret = EXIT_SUCCESS;
+		} else {
+			if (run_tunnel(&cfg) != 0)
+				ret = EXIT_FAILURE;
+			else
+				ret = EXIT_SUCCESS;
+			// the SAML session id is single use
+			if (cfg.saml_port != 0)
+				cfg.saml_session_id[0] = '\0';
+		}
 		if ((cfg.persistent > 0) && (get_sig_received() == 0))
 			sleep(cfg.persistent);
 	} while ((get_sig_received() == 0) && (cfg.persistent != 0));
