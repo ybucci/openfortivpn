@@ -88,6 +88,9 @@ int ssl_connect(struct tunnel *tunnel);
 
 int run_tunnel(struct vpn_config *config);
 
+/* Whether the tunnel reached the UP state during the last run_tunnel() call. */
+int tunnel_was_up(void);
+
 #define ARRAY_SIZE(x)	(sizeof(x) / sizeof((x)[0]))
 
 #endif

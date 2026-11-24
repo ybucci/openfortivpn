@@ -26,6 +26,12 @@
 #include <unistd.h>
 #include <getopt.h>
 
+/*
+ * In persistent mode, give up after this many consecutive attempts that did
+ * not bring the tunnel up. The counter restarts whenever the tunnel is up.
+ */
+#define MAX_FAILED_ATTEMPTS 3
+
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -773,6 +779,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	int failed_attempts = 0;
+
 	do {
 		int saml_ok = 1;
 
@@ -798,6 +806,20 @@ int main(int argc, char *argv[])
 			if (cfg.saml_port != 0)
 				cfg.saml_session_id[0] = '\0';
 		}
+
+		// Count consecutive attempts that did not bring the tunnel up.
+		if (saml_ok && tunnel_was_up())
+			failed_attempts = 0;
+		else
+			failed_attempts++;
+		if ((cfg.persistent > 0) && (get_sig_received() == 0)
+		    && failed_attempts >= MAX_FAILED_ATTEMPTS) {
+			log_error("Giving up after %d consecutive failed connection attempts.\n",
+			          failed_attempts);
+			ret = EXIT_FAILURE;
+			break;
+		}
+
 		if ((cfg.persistent > 0) && (get_sig_received() == 0))
 			sleep(cfg.persistent);
 	} while ((get_sig_received() == 0) && (cfg.persistent != 0));
