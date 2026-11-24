@@ -27,6 +27,7 @@
 #include <getopt.h>
 
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -747,6 +748,15 @@ int main(int argc, char *argv[])
 		ret = EXIT_FAILURE;
 		goto exit;
 	}
+
+	/*
+	 * Restore the default action of SIGINT and SIGTERM. A process started
+	 * in the background by a non-interactive shell ("cmd &") inherits
+	 * SIGINT as ignored, and could not be cancelled while waiting for the
+	 * SAML login. The tunnel installs its own handlers once it is running.
+	 */
+	signal(SIGINT, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
 
 	if (cfg.saml_port != 0) {
 		// Wait for the SAML token from the HTTP GET request

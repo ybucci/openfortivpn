@@ -20,7 +20,9 @@ connect)
 	exit 0
 	;;
 disconnect)
-	sudo -n /usr/bin/pkill -INT -x "$NAME"
+	# SIGTERM, not SIGINT: a process started in the background by this script
+	# inherits SIGINT as ignored.
+	sudo -n /usr/bin/pkill -TERM -x "$NAME"
 	exit 0
 	;;
 esac
