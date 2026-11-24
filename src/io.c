@@ -676,6 +676,13 @@ int io_loop(struct tunnel *tunnel)
 	if (signal(SIGHUP, SIG_IGN) == SIG_ERR)
 		goto err_signal;
 
+	/*
+	 * A stop request received while reconnecting, before these handlers
+	 * were running, must not be lost by the semaphore initialization above.
+	 */
+	if (sig_received == SIGINT || sig_received == SIGTERM)
+		SEM_POST(&sem_stop_io);
+
 	// create all workers, stop on first error and bail out
 	ret = pthread_create(&pty_read_thread, NULL, pppd_read, tunnel);
 	if (ret != 0) {
