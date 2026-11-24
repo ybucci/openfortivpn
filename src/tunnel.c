@@ -109,6 +109,14 @@ static int ofv_append_varr(struct ofv_varr *p, const char *x)
 	return 0;
 }
 
+// Set when the tunnel reached the UP state during the last run_tunnel() call.
+static volatile int tunnel_reached_up;
+
+int tunnel_was_up(void)
+{
+	return tunnel_reached_up;
+}
+
 static int on_ppp_if_up(struct tunnel *tunnel)
 {
 	log_info("Interface %s is UP.\n", tunnel->ppp_iface);
@@ -137,6 +145,7 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 		ipv4_add_nameservers_to_resolv_conf(tunnel);
 	}
 
+	tunnel_reached_up = 1;
 	log_info("Tunnel is up and running.\n");
 
 #if HAVE_SYSTEMD
@@ -1362,6 +1371,8 @@ int run_tunnel(struct vpn_config *config)
 		.on_ppp_if_up = on_ppp_if_up,
 		.on_ppp_if_down = on_ppp_if_down
 	};
+
+	tunnel_reached_up = 0;
 
 	// Step 0: get gateway host IP
 	log_debug("Resolving gateway host ip\n");
